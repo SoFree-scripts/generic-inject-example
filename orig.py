@@ -35,11 +35,7 @@ import ctypes
 import ctypes.util
 import os
 import sys
-from getpid import getpid
-#print("dumping env")
-#print(os.environ['PYTHONPATH'])
-
-#sys.path.insert(1, os.path.abspath(os.path.join(os.path.dirname(__file__), '.')))
+sys.path.insert(1, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from mayhem import utilities
 from mayhem.datatypes import windows as wintypes
@@ -51,11 +47,7 @@ INVALID_HANDLE_VALUE =  -1
 PIPE_ACCESS_DUPLEX =    0x00000003
 PIPE_TYPE_MESSAGE =     0x00000004
 PIPE_READMODE_MESSAGE = 0x00000002
-
-import random
-import string
-
-PIPE_NAME = ''.join(random.choice(string.ascii_letters) for i in range(6)) 
+PIPE_NAME = 'mayhem'
 
 INJECTION_STUB_TEMPLATE = r"""
 import codecs
@@ -74,7 +66,7 @@ except:
     traceback.print_exc()
 pipe.close()
 
-#ctypes.windll.kernel32.ExitThread(0)
+ctypes.windll.kernel32.ExitThread(0)
 """
 WAIT_OBJECT_0 = 0x00000000
 WAIT_TIMEOUT = 0x00000102
@@ -116,10 +108,10 @@ class NamedPipeClient(object):
 		m_k32.CloseHandle(self.handle)
 
 	@classmethod
-	def from_named_pipe(cls, name, buffer_size=4096, default_timeout=100, max_instances=255):
+	def from_named_pipe(cls, name, buffer_size=4096, default_timeout=100, max_instances=5):
 		handle = m_k32.CreateNamedPipeW(
 			'\\\\.\\pipe\\' + name,                     # _In_     LPCTSTR               lpName
-			PIPE_ACCESS_DUPLEX, #|FILE_FLAG_OVERLAPPED,  # _In_     DWORD                 dwOpenMode
+			PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,  # _In_     DWORD                 dwOpenMode
 			PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE,  # _In_     DWORD                 dwPipeMode
 			max_instances,                              # _In_     DWORD                 nMaxInstances
 			buffer_size,                                # _In_     DWORD                 nInBufferSize
@@ -133,8 +125,8 @@ class NamedPipeClient(object):
 		success = lambda: cls(handle, buffer_size=buffer_size)
 		overlapped = wintypes.OVERLAPPED()
 		overlapped.hEvent = m_k32.CreateEventW(None, True, False, None)
-		if m_k32.ConnectNamedPipe(handle, None): #ctypes.byref(overlapped)
-			# m_k32.CloseHandle(overlapped.hEvent)
+		if m_k32.ConnectNamedPipe(handle, ctypes.byref(overlapped)):
+			m_k32.CloseHandle(overlapped.hEvent)
 			return success()
 		error = m_k32.GetLastError()
 		if error == ERROR_IO_PENDING and _wait_overlapped_io(overlapped, default_timeout):
@@ -149,7 +141,7 @@ class NamedPipeClient(object):
 def main():
 	parser = argparse.ArgumentParser(description='python_injector: inject python code into a process', conflict_handler='resolve')
 	parser.add_argument('script_path', action='store', help='python script to inject into the process')
-	parser.add_argument('procname', action='store', help='process to inject into')
+	parser.add_argument('pid', action='store', type=int, help='process to inject into')
 	parser.epilog = 'The __name__ variable will be set to "__mayhem__".'
 	arguments = parser.parse_args()
 
@@ -157,53 +149,38 @@ def main():
 		print('[-] This tool is only available on Windows')
 		return
 
-	proc_pid = getpid(arguments.procname)
-	if proc_pid is None:
-		print("Cant find process")
-		sys.exit(1)
-	else:
-		print(f"PID is : {proc_pid}")
 	# get a handle the the process
 	try:
-		process_h = WindowsProcess(pid=proc_pid)
+		process_h = WindowsProcess(pid=arguments.pid)
 	except ProcessError as error:
 		print("[-] {0}".format(error.msg))
 		return
-	print("[+] Opened a handle to pid: {0}".format(proc_pid))
+	print("[+] Opened a handle to pid: {0}".format(arguments.pid))
 
 	# find and inject the python library
-	python_libname = "python{0}{1}.dll".format(sys.version_info.major, sys.version_info.minor)
-	# python_lib = ctypes.util.find_library(python_libname)
-	from os.path import exists, join, abspath
-	pythondll = next((abspath(f) for f in (join(p, python_libname) for p in sys.path) if exists(f)), '')
-	
-	if pythondll:
-		print("[*] Found Python library at: {0}".format(pythondll))
+	python_lib = "python{0}{1}.dll".format(sys.version_info.major, sys.version_info.minor)
+	python_lib = ctypes.util.find_library(python_lib)
+	if python_lib:
+		print("[*] Found Python library at: {0}".format(python_lib))
 	else:
 		print('[-] Failed to find the Python library')
 		return
 
 	print('[*] Injecting Python into the process...')
 	try:
-		python_lib_h = process_h.load_library(pythondll)
+		python_lib_h = process_h.load_library(python_lib)
 	except ProcessError as error:
 		print("[-] {0}".format(error.msg))
 		return
 	else:
-		print("[+] Loaded {0} with handle 0x{1:08x}".format(pythondll, python_lib_h))
+		print("[+] Loaded {0} with handle 0x{1:08x}".format(python_lib, python_lib_h))
 
 	# resolve the necessary functions
-	
-	# print (pythondll)
-	local_handle = m_k32.GetModuleHandleW(pythondll)
-	print (f"local_handle : {local_handle}")
+	local_handle = m_k32.GetModuleHandleW(python_lib)
 	py_initialize_ex = python_lib_h + (m_k32.GetProcAddress(local_handle, b'Py_InitializeEx') - local_handle)
-	py_finalize_ex = python_lib_h + (m_k32.GetProcAddress(local_handle, b'Py_FinalizeEx') - local_handle)
 	py_run_simple_string = python_lib_h + (m_k32.GetProcAddress(local_handle, b'PyRun_SimpleString') - local_handle)
-
 	print('[*] Resolved addresses:')
 	print("  - Py_InitializeEx:    0x{0:08x}".format(py_initialize_ex))
-	print("  - Py_FinalizeEx:    0x{0:08x}".format(py_finalize_ex))
 	print("  - PyRun_SimpleString: 0x{0:08x}".format(py_run_simple_string))
 
 	# call remote functions to initialize and run via remote threads
@@ -219,12 +196,7 @@ def main():
 	)
 	injection_stub = injection_stub.encode('utf-8') + b'\x00'
 
-	print ( f"abs_path : {os.path.abspath(arguments.script_path)}")
-
-	asize = utilities.align_up(len(injection_stub))
-	print(f"a_size : {asize}")
-	alloced_addr = process_h.allocate(size=asize, permissions='PAGE_READWRITE')
-	print (f"allocted_addr : {alloced_addr}")
+	alloced_addr = process_h.allocate(size=utilities.align_up(len(injection_stub)), permissions='PAGE_READWRITE')
 	process_h.write_memory(alloced_addr, injection_stub)
 	thread_h = process_h.start_thread(py_run_simple_string, alloced_addr)
 	client = NamedPipeClient.from_named_pipe(PIPE_NAME)
@@ -235,11 +207,7 @@ def main():
 			break
 		sys.stdout.write(message.decode('utf-8'))
 	client.close()
-	# wait for python interpreter to be calm?
 	process_h.join_thread(thread_h)
-	thread_h = process_h.start_thread(py_initialize_ex, 0)
-	process_h.join_thread(thread_h)
-	process_h.free_library(pythondll)
 	process_h.close()
 
 if __name__ == '__main__':

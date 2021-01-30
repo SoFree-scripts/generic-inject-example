@@ -1,6 +1,4 @@
 import ctypes
-
-
 def mayhem():
 	# As has been mentioned before, all Python types except integers, strings, and bytes objects have
 	# to be wrapped in their corresponding ctypes type, so that they can be converted to the required C data type:
@@ -22,4 +20,4 @@ if __name__ == '__main__':
 	print('this script must be injected')
 elif __name__ == '__mayhem__':
 	mayhem()
-
+	print("MAYHEM!")
