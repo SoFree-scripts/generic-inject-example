@@ -1,0 +1,79 @@
+# generic-inject-example — system overview
+# A worked example of injecting a Python interpreter into a running Windows
+# game process and calling one engine function from Python code.
+# Zones run left to right: entry points -> core -> state -> external.
+# Style classes set strokes only, so light and dark stay readable.
+
+title: |md
+  # generic-inject-example
+  Injects CPython into a live Soldier of Fortune process, runs a Python payload inside it, and streams that payload's output back to the terminal.
+| {near: top-center}
+
+direction: right
+grid-columns: 2
+grid-rows: 2
+horizontal-gap: 110
+vertical-gap: 100
+
+entry: Entry points {
+  direction: down
+
+  test: `test.py` · driver: process name in, Python injected, payload output streamed back
+  launch: `launch.sh` · git-bash wrapper that calls `cmd.exe /C python.exe test.py NAME PATH`
+  stub: the stub template · Python source, kept as a string in `test.py`: open the pipe, redirect stdout and stderr, run the payload as `__mayhem__`
+  payload: `script.py` · the example payload: call engine `COM_Printf` at 0x2001C6E0, then print
+  orig: `orig.py` · upstream `python_injector.py` untouched, kept as the diff baseline
+  deps: `Pipfile` · python 3.8 plus boltons, the one third-party package
+}
+
+core: Core {
+  direction: down
+
+  find: `getpid.py` · `EnumProcesses` then `GetProcessImageFileNameA`, first basename match wins
+  open: `WindowsProcess(pid=...)` · mayhem handle: read and write memory, allocate, remote threads
+  dll: locate `pythonXY.dll` · scanned out of `sys.path` by filename, not `find_library`
+  load: `LoadLibrary` in the target · by absolute path, so the target must read it and match bitness
+  rva: resolve two exports · `Py_InitializeEx` and `PyRun_SimpleString` as remote base plus local delta
+  init: start the interpreter · `Py_InitializeEx(0)` in a remote thread, then join
+  run: run the stub · `PyRun_SimpleString` on the stub string copied into the target
+  pipe: named pipe server · duplex, message mode, 255 instances, blocking connect
+  rel: stream and tear down · echo until the pipe breaks, join, re-init, free the dll
+
+  find -> open -> load -> rva -> init -> run
+  dll -> load: one path, one bitness
+  run -> pipe: the stub connects back
+  pipe -> rel: output until EOF
+}
+
+state: State {
+  direction: down
+
+  none: nothing is written · no config, no log, no cache · the payload path comes from argv
+  src: `script.py` on disk · the target opens it by absolute path, so the game must be able to read it
+  buf: the named pipe · the only channel out, anything not written to it is lost {shape: cylinder}
+}
+
+ext: External {
+  direction: down
+
+  game: the target process · SoF 1.06 in practice, it owns 0x2001C6E0 and executes the injected code
+  py: `pythonXY.dll` · must match the driver's major.minor and the game's bitness
+  mayhem: vendored `mayhem` 0.5.0 · win32 ctypes bindings, BSD-3, untouched subtree
+  syscalls: `windows_syscalls.db` · 39,761 syscall numbers shipped with mayhem, unused here
+}
+
+entry -> core: the driver wires the three pieces together
+core -> state: nothing persisted, one pipe carries the output
+core -> ext: loads a dll into another process and calls its exports
+
+classes: {
+  entry: {style: {stroke: "#2f6fbf"}}
+  core: {style: {stroke: "#2f8f5f"}}
+  state: {style: {stroke: "#a86a12"; stroke-dash: 3}}
+  ext: {style: {stroke: "#8a4fbf"; stroke-dash: 5}}
+}
+
+entry.class: entry
+core.class: core
+state.class: state
+ext.class: ext
